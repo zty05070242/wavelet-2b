@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "algo-trading-backtester-and-DSP"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+py-modules = [
+    "backtester",
+    "backtester_scaled",
+    "chart",
+    "data_loader",
+    "position_sizer",
+    "run_comparison",
+    "wavelet_denoiser",
+    "wavelet_kalman_calibrate",
+]
+packages = ["strategy_folder"]

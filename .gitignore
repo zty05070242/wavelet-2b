@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environment
+.venv/
+
+# Charts / output files
+*.html
+*.png
+
+# Environment variables
+.env

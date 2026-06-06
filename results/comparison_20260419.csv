@@ -1,0 +1,9 @@
+ticker,strategy,sharpe_ratio,max_drawdown_pct,total_return_pct,num_trades,win_rate_pct,profit_factor,expectancy
+^GSPC,MA/MA,0.15,-24.77,14.38,53,24.5,1.18,27.12
+^GSPC,Kalman/MA,0.07,-22.27,-0.71,57,15.8,0.99,-1.25
+^GSPC,Wavelet+MA/MA,-0.23,-37.98,-21.12,43,25.6,0.57,-49.11
+^GSPC,Wavelet+Kalman,0.35,-25.45,197.38,27,18.5,3.12,731.05
+SI=F,MA/MA,0.54,-18.68,3391.87,59,35.6,7.27,4901.71
+SI=F,Kalman/MA,0.27,-21.88,46.72,66,33.3,1.51,70.78
+SI=F,Wavelet+MA/MA,0.46,-23.08,716.6,56,37.5,7.5,1187.47
+SI=F,Wavelet+Kalman,0.06,-22.84,-0.37,48,29.2,0.99,-0.77
