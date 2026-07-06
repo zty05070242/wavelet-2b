@@ -1,30 +1,13 @@
 # Algorithmic Trading Backtester — DSP-Enhanced 2B Rule
 
-A daily-bar backtesting framework built around a single experiment: replacing
-the rolling-window pivot detector in Victor Sperandeo's **2B Rule** with a
-proper **DSP pivot-detection pipeline** (causal wavelet denoising → SciPy
-peak-finding → prominence-and-confirmation gating), and measuring whether
-that change produces a structurally cleaner trading signal.
+A daily-bar backtesting framework built around a single experiment: replacing the rolling-window pivot detector with a **DSP pivot-detection pipeline** for Victor Sperandeo's **2B Rule** (causal wavelet denoising → SciPy peak-finding → prominence-and-confirmation gating), and measuring whether that change produces a structurally cleaner trading signal.
 
-## At a glance
+## Rationale
 
-The project is the work of a tonmeister (audio signal processing background)
-moving into quantitative finance. The thesis: a financial chart is a noisy
-time-series and the tools used to clean noisy audio — wavelet decomposition,
-adaptive smoothing, peak detection with prominence — should transfer
-directly. The 2B Rule is a perfect target for that transfer: its core
-primitive is a "swing high / swing low," which a chart-reading human extracts
-by *visual prominence*, not by rolling-window maximum. So we encode that
-visual filter as a signal-processing pipeline and see what changes.
+A financial chart is a noisy time-series and the tools used to clean noisy audio — wavelet decomposition, adaptive smoothing, peak detection with prominence — should transfer directly. The 2B Rule is a perfect target for that transfer: its core idea is a "swing high / swing low," which a chart-reading human extracts by *visual prominence*, not by rolling-window maximum. So I encoded that visual filter as a signal-processing pipeline and see what changes.
 
-**Headline result:** across 10 commodity futures (Gold, Silver, Crude Oil,
-Natural Gas, Copper, Wheat, Corn, Soybeans, Coffee, Live Cattle) from
-2000–2026, the wavelet-based pivot detector **consistently reduces max drawdown
-in 7–8 of 10 markets** at the same risk budget. On Sharpe ratio the picture
-is mixed — plain 2B wins on risk-adjusted return in most markets once its
-baseline is correctly specified (no backwards filters), but Wavelet-2B
-produces ~40% fewer signals and structurally cleaner entries, which is
-where the drawdown edge comes from.
+**Headline result:** across 10 commodity futures (Gold, Silver, Crude Oil, Natural Gas, Copper, Wheat, Corn, Soybeans, Coffee, Live Cattle) from 2000–2026, the wavelet-based pivot detector **consistently reduces max drawdown
+in 7-8 of 10 markets** at the same risk budget. On Sharpe ratio the picture is mixed. Plain 2B wins on risk-adjusted return in most markets once its baseline is correctly specified (no backwards filters), but Wavelet-2B produces ~40% fewer signals and structurally cleaner entries, which is where the drawdown edge comes from.
 
 ---
 
@@ -60,41 +43,23 @@ wavelet_kalman_calibrate.py     (side experiment) spectral calibration of Kalman
 
 ### Sperandeo's 2B Rule — from book knowledge to code application
 
-Victor Sperandeo's failed-breakout reversal pattern (from *Trader Vic — Methods
-of a Wall Street Master*):
+Victor Sperandeo's failed-breakout reversal pattern (from *Trader Vic — Methods of a Wall Street Master*):
 
-- **Short signal**: price breaks above a prior swing high, then closes back
-  *below* it within a few bars. The failed breakout is the entry.
-- **Long signal**: mirror image — price breaks below a prior swing low, then
-  closes back above it.
+- **Short signal**: price breaks above a prior swing high, then closes back below it within a few bars. The failed breakout is the entry.
+- **Long signal**: mirror image — price breaks below a prior swing low, then closes back above it.
 
-Implemented in [strategy_folder/two_b.py](strategy_folder/two_b.py). The book
-defines "prior swing high/low" by visual inspection; the most common naive
-encoding — and the one used in the baseline here — is a **rolling N-bar
-maximum / minimum** of the high/low channel.
+Implemented in [strategy_folder/two_b.py](strategy_folder/two_b.py). The book defines "prior swing high/low" by visual inspection. The most common naive encoding for this strategy is the one used in the baseline here: a **rolling N-bar maximum / minimum** of the high/low channel.
 
 ### The flaw in the rolling-window encoding
 
-A rolling N-bar max forgets. The "swing high" at bar t is the highest bar of
-the last N bars, full stop — even if that bar was a single noisy spike, and
-regardless of whether N bars ago there was a vastly more significant pivot.
-In a trending market the rolling window keeps printing new highs, and the
-strategy keeps reading "price broke above the rolling high" as a 2B short
+A rolling N-bar max forgets earlier pivots. The "swing high" at bar t is the highest bar of the last N bars, full stop, regardless of whether x bars ago there was a vastly more significant pivot. In a trending market the rolling window keeps printing new highs, and the strategy keeps reading "price broke above the rolling high" as a 2B short
 setup. It fires false shorts the whole way up a bull market.
 
-Concrete example from the backtests: during silver's 2010–2011 bull run
-($15 → $50), the plain 2B Rule caught a long from $15→$19 in early 2010, then
-spent the rest of the run firing repeated short signals against a rolling
-high that was being rewritten every few weeks. The structural lows around $28
-that defined the trend's pullbacks were already outside its 20-bar window
-and invisible to it.
+Concrete example from the backtests: during silver's 2010–2011 bull run ($15 → $50), the plain 2B Rule caught a long from $15→$19 in early 2010, then spent the rest of the run firing repeated short signals against a rolling high that was being rewritten every few weeks. The structural lows around $28 that defined the trend's pullbacks were already outside its 20-bar window and invisible to it.
 
 ### Wavelet-2B — encoding the human eye
 
-A human chart reader picks out swing highs by visual prominence: a peak
-stands above its surroundings, the surroundings being smoothed implicitly by
-the eye. That's a denoise-then-find-local-maxima pipeline. Implemented in
-[strategy_folder/wavelet_two_b.py](strategy_folder/wavelet_two_b.py):
+A human chart reader picks out swing highs by visual prominence: a peak stands above its surroundings, the surroundings being smoothed implicitly by the eye. That's a denoise-then-find-local-maxima pipeline. Implemented in [strategy_folder/wavelet_two_b.py](strategy_folder/wavelet_two_b.py):
 
 ```
 raw close ──► rolling causal wavelet denoise (db6, soft threshold, win=128)
@@ -106,29 +71,17 @@ raw close ──► rolling causal wavelet denoise (db6, soft threshold, win=128
 
 Every stage has a DSP analog:
 
-- **Denoise** suppresses tick-level chop so peaks correspond to structural
-  swings, not single bars.
-- **Prominence** (the vertical distance from a peak down to its lowest
-  contour line) is exactly the "does this swing matter" filter the eye
-  applies. Expressing it in ATR multiples makes it self-adapting across
-  assets and regimes.
-- **Confirmation lag** is the group-delay analog of pivot detection: a peak
-  is only known to *be* a peak once enough bars have printed lower to its
-  right.
+- **Denoise** suppresses tick-level chop so peaks correspond to structural swings, not single bars.
+- **Prominence** (the vertical distance from a peak down to its lowest contour line) is exactly the "does this swing matter" filter the eye applies. Expressing it in ATR multiples makes it self-adapting across assets and regimes.
+- **Confirmation lag** is the group-delay analog of pivot detection: a peak is only known to *be* a peak once enough bars have printed lower to its right.
 
-The 2B failed-breakout logic itself is unchanged — only the *source of the
-swing-high/low reference* changes.
+The 2B failed-breakout logic itself is unchanged. Only the *source of the swing-high/low reference* changes.
 
 ### Causality
 
-- `rolling_wavelet_denoise()` is causal — denoised[t] depends only on the
-  prior 128 bars.
+- `rolling_wavelet_denoise()` is causal — denoised[t] depends only on the prior 128 bars.
 - A pivot at bar k is only treated as "known" once t ≥ k + `pivot_confirm_bars`.
-- One asterisk: `scipy.find_peaks` computes prominence over the full array,
-  so pivot *selection* (whether a peak passes the prominence gate) could in
-  principle shift as later data arrives. The trade decision itself uses only
-  already-confirmed pivots and the current bar, so no future data leaks into
-  signals. Documented inline at the top of [wavelet_two_b.py](strategy_folder/wavelet_two_b.py).
+- One asterisk: `scipy.find_peaks` computes prominence over the full array, so pivot *selection* (whether a peak passes the prominence gate) could in principle shift as later data arrives. The trade decision itself uses only already-confirmed pivots and the current bar, so no future data leaks into signals. Documented inline at the top of [wavelet_two_b.py](strategy_folder/wavelet_two_b.py).
 
 ---
 
@@ -151,19 +104,13 @@ Both engines share the same Strategy interface and metrics output.
 - Each tranche has its own entry price and stop loss.
 - Total risk exposure preserved: `tranche_risk_pct = risk_pct / max_tranches`.
 
-The scaled engine is the more revealing one for this comparison. The plain
-engine's all-in/all-out compounding amplifies sizing effects — a 26-year
-backtest on a strongly trending asset can post returns of 22,000% on what is
-actually a moderately-good signal. The scaled engine flattens that effect
-and reveals the underlying per-trade economics.
+The scaled engine is the more revealing one for this comparison. The plain engine's all-in/all-out compounding amplifies sizing effects — a 26-year backtest on a strongly trending asset can post returns of 22,000% on what is actually a moderately-good signal. The scaled engine flattens that effect and reveals the underlying per-trade economics.
 
 ---
 
 ## Results — 10 commodity futures, 2000–2026
 
-Run from `python run_comparison.py`. £10,000 initial balance, 2% risk per
-trade (split across tranches in scaled mode), 1 bp slippage. Full numbers in
-[results/comparison_20260604.csv](results/comparison_20260604.csv).
+Run from `python run_comparison.py`. £10,000 initial balance, 2% risk per trade (split across tranches in scaled mode), 1 bp slippage. Full numbers in [results/comparison_20260604.csv](results/comparison_20260604.csv).
 
 ### Unscaled backtester (all-in / all-out)
 
@@ -205,98 +152,50 @@ Profit factor: **Wavelet wins 6/10**.
 
 ### Key findings
 
-An earlier version used volume and ATR breakout filters on the 2B baseline —
-both counterproductive for a reversal strategy (high-volume breakouts are
-exactly the ones you don't want to fade). Removing them lifted TwoB's Sharpe
-noticeably, which is why the results here are more balanced than first reported.
-The table above is the corrected, honest baseline.
+An earlier version used volume and ATR breakout filters on the 2B baseline. They are both counterproductive for a reversal strategy (high-volume breakouts are exactly the ones you don't want to fade). Removing them lifted TwoB's Sharpe noticeably. The table above is the corrected, honest baseline.
 
-Wavelet-2B's main edge is drawdown: it fires ~40% fewer signals, which limits
-exposure during losing stretches. That holds even in markets where it loses on
-Sharpe. Plain 2B stays more active and compounds more aggressively — higher
-Sharpe in most markets, higher drawdown in almost all of them. Genuine
-trade-off, not a clear winner.
+Wavelet-2B's main edge is drawdown: it fires ~40% fewer signals, which limits exposure during losing stretches. That holds even in markets where it loses on Sharpe. Plain 2B stays more active and compounds more aggressively. Higher
+Sharpe in most markets, higher drawdown in almost all of them. Genuine trade-off, not a clear winner.
 
-Crude Oil is the clearest case for Wavelet-2B. The rolling-window baseline
-struggles there (Sharpe 0.35–0.38, drawdown -50% to -83%) because Crude's
-noisy price action constantly rewrites the rolling high/low and generates
+Crude Oil is the clearest case for Wavelet-2B. The rolling-window baseline struggles there (Sharpe 0.35–0.38, drawdown -50% to -83%) because Crude's noisy price action constantly rewrites the rolling high/low and generates
 false breakouts. The prominence filter screens most of those out.
 
-Natural Gas is the hard case for both strategies. Regime changes and
-seasonality make failed-breakout logic structurally awkward on NG=F; neither
-pivot method handles it well.
+Natural Gas is the hard case for both strategies. Regime changes and seasonality make failed-breakout logic structurally awkward on NG=F; neither pivot method handles it well.
 
 ---
 
 ## Side experiments
 
-Earlier exploration into wavelet/Kalman preprocessing for crossover
-strategies, kept in the repo for completeness but no longer the focus of the
-write-up:
+My early stage exploration into wavelet/Kalman preprocessing for crossover strategies, kept in the repo for completeness but no longer the focus of the write-up:
 
 - [strategy_folder/ma_cross.py](strategy_folder/ma_cross.py) — baseline MA crossover.
 - [strategy_folder/kalman_cross.py](strategy_folder/kalman_cross.py), [strategy_folder/kalman_ma_hybrid.py](strategy_folder/kalman_ma_hybrid.py) — Kalman as a smoother in crossover form.
 - [strategy_folder/wavelet_ma_cross.py](strategy_folder/wavelet_ma_cross.py), [strategy_folder/wavelet_kalman_cross.py](strategy_folder/wavelet_kalman_cross.py) — same crossovers run on wavelet-denoised close.
-- [wavelet_kalman_calibrate.py](wavelet_kalman_calibrate.py) — offline DWT
-  spectral analysis to derive Kalman process-noise Q from band SNR rather
-  than hand-tuning. Demonstrates the spectral pipeline but uses
-  full-series look-ahead — not live-tradeable as-is.
+- [wavelet_kalman_calibrate.py](wavelet_kalman_calibrate.py) — offline DWT spectral analysis to derive Kalman process-noise Q from band SNR rather than hand-tuning. Demonstrates the spectral pipeline but uses full-series look-ahead — not live-tradeable as-is.
 
-Short version of what those experiments showed: stacking a wavelet denoiser
-in front of an MA crossover is redundant (both are low-pass filters with
-overlapping bands → premature exits), while stacking it in front of a
-Kalman crossover is complementary (Kalman's adaptive bandwidth fills a
-different role) but only buys risk-adjusted improvement, not raw return.
-That conclusion is what pointed the project toward 2B Rule — a strategy
-where the DSP role is *structural pivot identification*, not bandlimiting
-the input signal.
+Summary of what those experiments showed: stacking a wavelet denoiser in front of an MA crossover is redundant (both are low-pass filters with overlapping bands → premature exits), while stacking it in front of a Kalman crossover is complementary (Kalman's adaptive bandwidth fills a different role) but only buys risk-adjusted improvement, not raw return. That conclusion is what pointed the project toward 2B Rule: a strategy where the DSP role is *structural pivot identification*, not bandlimiting the input signal.
 
 ---
 
 ## Regime analysis — HMM overlay
 
-Real systematic funds almost never run a strategy naked — they run a regime
-classifier on top that controls when the strategy is allowed to trade.
-[regime_hmm.py](regime_hmm.py) fits a 3-state Gaussian HMM on two features:
-
+Real systematic funds almost never run a strategy naked, instead, they run a regime classifier on top that controls when the strategy is allowed to trade. [regime_hmm.py](regime_hmm.py) fits a 3-state Gaussian HMM on two features:
 - **20-day rolling realized volatility** (std of daily log returns)
 - **20-day cumulative log return** (directional component)
 
-States are labelled by mean realized vol ascending: **ranging** (low) /
-**trending** (mid) / **volatile** (high). Both a retrospective full-series
-decode (for post-hoc analysis) and a causal rolling version (refit quarterly
-on a 5-year trailing window, safe for signal gating) are implemented.
+States are labelled by mean realised vol ascending: **ranging** (low) / **trending** (mid) / **volatile** (high). Both a retrospective full-series decode (for post-hoc analysis) and a causal rolling version (refit quarterly on a 5-year trailing window, safe for signal gating) are implemented.
 
 [run_regime_analysis.py](run_regime_analysis.py) does two things:
 
-**1. Per-regime trade breakdown.** For each of the 10 markets, it splits the
-trade log from each backtest by the regime active at entry date. This answers
-the question the aggregate Sharpe table can't: in which market conditions does
-each strategy actually earn money, and in which does it bleed?
+**1. Per-regime trade breakdown.** For each of the 10 markets, it splits the trade log from each backtest by the regime active at entry date. This answers the question the aggregate Sharpe table can't: in which market conditions does each strategy actually earn money, and in which does it bleed?
 
-The natural gas result is the clearest example of why this matters. NG=F posts
-the weakest numbers of any market across both strategies and both backtesters.
-The regime breakdown shows why: natural gas spends roughly 60% of its history
-in the volatile state — sharp directional moves with frequent regime shifts —
-which is structurally the worst environment for a failed-breakout reversal.
-The strategy fires, gets stopped out on the continuation, and fires again. The
-underperformance isn't a parameter problem; it's a regime mismatch. Knowing
-that converts a confusing result into a research finding.
+The natural gas result is the clearest example of why this matters. NG=F posts the weakest numbers of any market across both strategies and both backtesters. The regime breakdown shows why: natural gas spends roughly 60% of its history in the volatile state (sharp directional moves with frequent regime shifts) which is structurally the worst environment for a failed-breakout reversal. The strategy fires, gets stopped out on the continuation, and fires again. The bad performance isn't a strategy problem, but a regime mismatch. By knowing this, I converted a confusing result into a research finding.
 
-**2. Crisis-filtered backtest.** Signals in the volatile regime are zeroed out
-using the causal rolling HMM (no look-ahead). The comparison shows how much of
-each strategy's drawdown comes specifically from trading through high-volatility
-regimes, and whether crisis-filtering improves risk-adjusted returns at the cost
-of reduced trade count.
+**2. Crisis-filtered backtest.** Signals in the volatile regime are zeroed out using the causal rolling HMM (no look-ahead). The comparison shows how much of each strategy's drawdown comes specifically from trading through high-volatility regimes, and whether crisis-filtering improves risk-adjusted returns at the cost of reduced trade count.
 
 ### Causality
 
-The full-series HMM (used only for the per-regime breakdown) is not causal —
-it sees the full 26-year history before labelling any bar, so it can't be used
-for live gating. The rolling version is strictly causal: the model fit at time
-t uses only bars up to t, and the state label for bar t is produced without any
-forward-looking information. All crisis-filtering in the backtest uses the
-causal labels only.
+The full-series HMM (used only for the per-regime breakdown) is not causal. It sees the full 26-year history before labelling any bar, so it can't be used live. The rolling version is strictly causal: the model fit at time t uses only bars up to t, and the state label for bar t is produced without any forward-looking information. All crisis-filtering in the backtest uses the causal labels only.
 
 ---
 
@@ -336,9 +235,7 @@ class Strategy(ABC):
     def get_signals(self) -> pd.DataFrame: ...
 ```
 
-`generate_signals()` returns the full OHLCV DataFrame plus a `signal` column
-(`1` = long, `-1` = short, `0` = flat) and optionally a `stop_loss` column.
-If `stop_loss` is present the backtester uses it; otherwise it falls back to
+`generate_signals()` returns the full OHLCV DataFrame plus a `signal` column (`1` = long, `-1` = short, `0` = flat) and optionally a `stop_loss` column. If `stop_loss` is present the backtester uses it; otherwise it falls back to
 bar low/high.
 
 ### Position sizing
@@ -354,47 +251,28 @@ units = (account_balance × risk_pct) / |entry_price − stop_loss|
 [wavelet_denoiser.py](wavelet_denoiser.py) — Donoho-Johnstone universal
 threshold:
 
-1. Discrete wavelet transform decomposes price into a coarse approximation
-   plus a pyramid of detail bands.
+1. Discrete wavelet transform decomposes price into a coarse approximation plus a pyramid of detail bands.
 2. Estimate noise σ from the finest detail band via MAD: `σ = median(|cD₁|) / 0.6745`.
-3. Apply threshold `σ · √(2 log n) · threshold_scale` to every detail band
-   (soft shrinkage).
+3. Apply threshold `σ · √(2 log n) · threshold_scale` to every detail band (soft shrinkage).
 4. Inverse DWT reconstructs the cleaned price.
 
-The causal `rolling_wavelet_denoise()` slides a 128-bar (Wavelet-2B) or
-252-bar (older crossover strategies) window and keeps only the final
-reconstructed value at each step — no future data feeds the estimate at t.
+The causal `rolling_wavelet_denoise()` slides a 128-bar (Wavelet-2B) or 252-bar (older crossover strategies) window and keeps only the final reconstructed value at each step. No future data feeds the estimate at t.
 
 ### Chart
 
-[chart.py](chart.py) — `plot_signals(strategy)` renders a Plotly candlestick
-chart with buy/sell markers and auto-overlays any DataFrame column not in
-`{open, high, low, close, volume, signal, avg_volume, atr, stop_loss}`. So
-strategies surface their internal state (e.g. `wavelet_close`, `swing_high`,
-`swing_low`) just by storing it on the DataFrame.
+[chart.py](chart.py) — `plot_signals(strategy)` renders a Plotly candlestick chart with buy/sell markers and auto-overlays any DataFrame column not in `{open, high, low, close, volume, signal, avg_volume, atr, stop_loss}`. So
+strategies surface their internal state (e.g. `wavelet_close`, `swing_high`, `swing_low`) just by storing it on the DataFrame.
 
 ---
 
 ## Limitations
 
-- **Single parameter set.** Every strategy uses one hand-picked configuration —
-  no grid search, no walk-forward optimisation. The results are an existence
-  proof of the DSP pivot-detection idea, not a calibrated production
-  strategy.
-- **Wavelet rolling-window cost.** `rolling_wavelet_denoise()` is O(window × N).
-  Runs in a few seconds per 26-year daily history; an intraday version would
-  need a faster causal pipeline (e.g. SWT or a fixed-level partial DWT).
-- **Prominence is computed globally.** `scipy.find_peaks` reads the full
-  denoised array when computing prominence. Pivot *selection* is therefore
-  not strictly causal, even though the trade decision is. A fully-causal
-  peak finder is straightforward to add.
-- **Transaction costs.** 1 bp slippage per fill only — no commissions, borrow
-  costs for shorts, exchange fees, or roll costs (relevant for futures).
-- **Single-asset backtests.** All-in or all-tranche per ticker. No portfolio
-  effects, correlation-aware sizing, or cross-asset allocation.
-- **Data source.** `yfinance` daily continuous futures contracts — adequate
-  for a portfolio-piece backtest, not production quality. NG=F and LE=F in
-  particular can have sparser histories on Yahoo.
+- **Single parameter set.** Every strategy uses one hand-picked configuration, so no grid search, no walk-forward optimisation. The results are an existence proof of the DSP pivot-detection idea, not a calibrated production strategy.
+- **Wavelet rolling-window cost.** `rolling_wavelet_denoise()` is O(window × N). Runs in a few seconds per 26-year daily history; an intraday version would need a faster causal pipeline (e.g. SWT or a fixed-level partial DWT).
+- **Prominence is computed globally.** `scipy.find_peaks` reads the full denoised array when computing prominence. Pivot *selection* is therefore not strictly causal, even though the trade decision is. A fully-causal peak finder is straightforward to add.
+- **Transaction costs.** 1 bp slippage per fill only. No commissions, borrow costs for shorts, exchange fees, or roll costs (relevant for futures).
+- **Single-asset backtests.** All-in or all-tranche per ticker. No portfolio effects, correlation-aware sizing, or cross-asset allocation.
+- **Data source.** `yfinance` daily continuous futures contracts. Adequate for a portfolio-piece backtest, not production quality. NG=F and LE=F in particular can have sparser histories on Yahoo.
 
 ---
 
