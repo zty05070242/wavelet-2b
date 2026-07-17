@@ -267,11 +267,10 @@ strategies surface their internal state (e.g. `wavelet_close`, `swing_high`, `sw
 
 ## Limitations
 
-- **Single parameter set.** Every strategy uses one hand-picked configuration, so no grid search, no walk-forward optimisation. The results are an existence proof of the DSP pivot-detection idea, not a calibrated production strategy.
 - **Wavelet rolling-window cost.** `rolling_wavelet_denoise()` is O(window × N). Runs in a few seconds per 26-year daily history; an intraday version would need a faster causal pipeline (e.g. SWT or a fixed-level partial DWT).
 - **Prominence is computed globally.** `scipy.find_peaks` reads the full denoised array when computing prominence. Pivot *selection* is therefore not strictly causal, even though the trade decision is. A fully-causal peak finder is straightforward to add.
 - **Transaction costs.** 1 bp slippage per fill only. No commissions, borrow costs for shorts, exchange fees, or roll costs (relevant for futures).
-- **Single-asset backtests.** All-in or all-tranche per ticker. No portfolio effects, correlation-aware sizing, or cross-asset allocation.
+- **Single-asset backtests.** All-in or all-tranche per ticker. Single-asset time-series forcasting. No portfolio effects, correlation-aware sizing, or cross-sectional allocation.
 - **Data source.** `yfinance` daily continuous futures contracts. Adequate for a portfolio-piece backtest, not production quality. NG=F and LE=F in particular can have sparser histories on Yahoo.
 
 ---
