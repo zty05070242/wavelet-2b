@@ -17,3 +17,9 @@ dist/
 
 # Environment variables
 .env
+
+# Claude Code
+.agents/
+.claude/
+agent/
+skills-lock.json
