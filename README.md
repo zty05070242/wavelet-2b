@@ -2,7 +2,7 @@
 
 While reading through Victor Sperandeo's *Trader Vic* books, I came across his 2B Rule. I wanted to see if I could implement it in code. The most natural encoding was a rolling N-bar maximum for the swing high and a rolling N-bar minimum for the swing low, so that's what I built first.
 
-It was terrible. The rolling window kept firing false signals and felt far worse than doing it by eye. The problem was that raw price data is noisy, and a rolling maximum has no way to distinguish a genuine structural pivot from a single spike bar; it just takes whatever was highest in the last N bars and calls it a swing high. Our eyes filter that noise implicitly, and a rolling window has no equivalent.
+It was terrible. The rolling window kept firing false signals and felt far worse than doing it by eye. The problem is that raw price data is noisy, and a rolling maximum has no way to distinguish a genuine structural pivot from a single spike bar; it just takes whatever was highest in the last N bars and calls it a swing high. Our eyes filter that noise implicitly, and a rolling window has no equivalent.
 
 Being a tonmeister, I thought I could put my background to use. Reading Stefan Jansen's *Machine Learning for Algorithmic Trading*, he mentions wavelet decomposition. Similar to a Fourier transform, it decomposes the signal into its frequency components. That meant I could apply a low-pass filter to suppress the high-frequency noise, then reconstruct back into the time domain with noise removed. So I applied that to the price series and rebuilt the pivot detector pipeline: wavelet denoising → prominence-filtered peak detection → confirmation gating.
 
