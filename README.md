@@ -69,11 +69,9 @@ raw close ──► rolling causal wavelet denoise (db6, soft threshold, win=128
           ──► resulting pivot levels feed Sperandeo's failed-breakout test
 ```
 
-Every stage has a DSP analogue:
-
 - **Denoise** suppresses tick-level chop so peaks correspond to structural swings, not single bars.
 - **Prominence** (the vertical distance from a peak down to its lowest contour line) is exactly the "does this swing matter" filter the eye applies. Expressing it in ATR multiples makes it self-adapting across assets and regimes.
-- **Confirmation lag** is the group-delay analog of pivot detection: a peak is only known to *be* a peak once enough bars have printed lower to its right.
+- **Confirmation lag**: a peak is only known to *be* a peak once enough bars have printed lower to its right.
 
 The 2B failed-breakout logic itself is unchanged. Only the *source of the swing-high/low reference* changes.
 
