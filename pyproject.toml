@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "algo-trading-backtester-and-DSP"
-version = "0.1.0"
-requires-python = ">=3.10"
+name = "wavelet-2b"
+version = "0.2.0"
+requires-python = ">=3.11"
 
 [tool.setuptools]
 py-modules = [
@@ -14,6 +14,8 @@ py-modules = [
     "chart",
     "data_loader",
     "position_sizer",
+    "backtest_metrics",
+    "pivot_detector",
     "regime_hmm",
     "run_comparison",
     "run_regime_analysis",

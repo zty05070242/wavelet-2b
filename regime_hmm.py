@@ -5,29 +5,26 @@ Two modes:
   decode_regimes_full()    — fits on the full series; NOT causal; for post-hoc analysis only
   rolling_causal_regimes() — rolling refit on trailing window; causal; safe for signal gating
 
-Features: 20-day rolling log return + 20-day realized vol, z-scored within each fit window.
-3 states sorted by mean realized vol: ranging (low) / trending (mid) / volatile (high).
-
-State labelling is by vol level, not by return sign — so 'trending' means moderate vol,
-not necessarily upward trend. Whether that state tends to be trending or choppy is
-an empirical question answered by looking at the mean return feature per state.
+Features: 20-day normalized price change and realized volatility, z-scored within each fit window.
+States are named only by the quantity used to order them: realized volatility.
 """
 
 import numpy as np
 import pandas as pd
-from hmmlearn.hmm import GaussianHMM
 
 RETURN_WINDOW = 20
 VOL_WINDOW    = 20
 
-_STATE_NAMES = {2: ['calm', 'volatile'], 3: ['ranging', 'trending', 'volatile']}
+_STATE_NAMES = {2: ['low_vol', 'high_vol'], 3: ['low_vol', 'medium_vol', 'high_vol']}
 
 
 def _raw_features(series: pd.Series) -> pd.DataFrame:
-    """20-day rolling log return (col 0) + 20-day realized vol (col 1). NaN-dropped."""
-    log_r    = np.log(series / series.shift(1))
-    roll_ret = log_r.rolling(RETURN_WINDOW).sum()
-    roll_vol = log_r.rolling(VOL_WINDOW).std()
+    """Features that remain defined when a futures settlement crosses zero."""
+    scale = series.abs().rolling(RETURN_WINDOW, min_periods=1).median().shift(1)
+    scale = scale.replace(0, np.nan)
+    normalized_change = series.diff() / scale
+    roll_ret = normalized_change.rolling(RETURN_WINDOW).sum()
+    roll_vol = normalized_change.rolling(VOL_WINDOW).std()
     return pd.DataFrame({'ret': roll_ret, 'vol': roll_vol}).dropna()
 
 
@@ -42,20 +39,60 @@ def _zscale(X_train: np.ndarray, X_apply: np.ndarray | None = None):
     return scaled, (X_apply - mu) / std
 
 
-def _state_map(model: GaussianHMM, n_states: int) -> dict[int, str]:
+def _state_map(model, n_states: int) -> dict[int, str]:
     """Sort HMM state indices by mean realized vol (col 1) ascending, assign names."""
     order = np.argsort(model.means_[:, 1])
     names = _STATE_NAMES.get(n_states, [f'state_{i}' for i in range(n_states)])
     return {int(order[i]): names[i] for i in range(n_states)}
 
 
-def _fit(X: np.ndarray, n_states: int, random_state: int) -> GaussianHMM:
+def _fit(X: np.ndarray, n_states: int, random_state: int):
+    from hmmlearn.hmm import GaussianHMM
+
     model = GaussianHMM(
         n_components=n_states, covariance_type='full',
         n_iter=300, random_state=random_state,
     )
     model.fit(X)
     return model
+
+
+def _gaussian_log_likelihood(model, observations: np.ndarray) -> np.ndarray:
+    """Log emission probability for each observation and HMM state."""
+    dimensions = observations.shape[1]
+    output = np.empty((len(observations), len(model.means_)))
+    constant = dimensions * np.log(2 * np.pi)
+    for state, (mean, covariance) in enumerate(zip(model.means_, model.covars_)):
+        sign, log_determinant = np.linalg.slogdet(covariance)
+        if sign <= 0:
+            raise ValueError("HMM covariance matrix is not positive definite")
+        difference = observations - mean
+        mahalanobis = np.einsum(
+            "ij,jk,ik->i", difference, np.linalg.inv(covariance), difference
+        )
+        output[:, state] = -0.5 * (constant + log_determinant + mahalanobis)
+    return output
+
+
+def _decode_block_causally(model, train_X: np.ndarray, block_X: np.ndarray) -> np.ndarray:
+    """Filter a block forward without the backward pass used by Viterbi smoothing."""
+    observations = np.vstack([train_X, block_X])
+    log_likelihood = _gaussian_log_likelihood(model, observations)
+    likelihood = np.exp(log_likelihood - log_likelihood.max(axis=1, keepdims=True))
+
+    probabilities = model.startprob_ * likelihood[0]
+    probabilities /= probabilities.sum()
+    states = []
+    for index in range(1, len(observations)):
+        probabilities = (probabilities @ model.transmat_) * likelihood[index]
+        total = probabilities.sum()
+        if not np.isfinite(total) or total <= 0:
+            probabilities = np.full(len(probabilities), 1 / len(probabilities))
+        else:
+            probabilities /= total
+        if index >= len(train_X):
+            states.append(int(np.argmax(probabilities)))
+    return np.asarray(states, dtype=int)
 
 
 def decode_regimes_full(
@@ -108,12 +145,9 @@ def rolling_causal_regimes(
             i += refit_every
             continue
 
-        # Viterbi over training window + block together for smoother boundary transitions.
-        # No future data: block_Xs only goes up to `end`, which is already in the past
-        # relative to the next refit point.
-        full_Xs      = np.vstack([train_Xs, block_Xs])
-        all_states   = model.predict(full_Xs)
-        block_states = all_states[train_window:]
+        # Re-decode the growing prefix for each date. Decoding the full quarter
+        # in one call would let later observations alter earlier state labels.
+        block_states = _decode_block_causally(model, train_Xs, block_Xs)
         smap         = _state_map(model, n_states)
 
         for j, idx in enumerate(feat.index[i : end]):

@@ -1,237 +1,234 @@
-"""
-run_comparison.py — 2B Rule vs Wavelet-2B across ten commodity futures, with
-both the plain and scaled backtesters for each strategy (four rows per ticker).
-
-For each ticker, runs:
-  - 2B Rule          + Backtester
-  - 2B Rule          + BacktesterScaled
-  - Wavelet-2B       + Backtester
-  - Wavelet-2B       + BacktesterScaled
-
-Saves:
-  - results/comparison_YYYYMMDD.csv — full table across every (ticker, run).
-  - results/equity_<ticker>.html    — equity curves overlaid for all 4 runs.
-
-Usage: python run_comparison.py
-"""
+"""Run the 2B and Wavelet-2B strategies on development and evaluation samples."""
 
 from __future__ import annotations
+
+import hashlib
 import os
+from dataclasses import dataclass
 from datetime import date
 from typing import List, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
 
-from data_loader import load_historical_data
 from backtester import Backtester
 from backtester_scaled import BacktesterScaled
-
+from data_loader import load_historical_data
 from strategy_folder._strategy_base_class import Strategy
 from strategy_folder.two_b import TwoB
 from strategy_folder.wavelet_two_b import WaveletTwoB
 
 
-# --- Configuration ----------------------------------------------------------
-
-DEFAULT_TICKERS = [
-    'GC=F',   # Gold
-    'SI=F',   # Silver
-    'CL=F',   # Crude Oil (WTI)
-    'NG=F',   # Natural Gas
-    'HG=F',   # Copper
-    'ZW=F',   # Wheat
-    'ZC=F',   # Corn
-    'ZS=F',   # Soybeans
-    'KC=F',   # Coffee
-    'LE=F',   # Live Cattle
-]
-START_DATE      = '2000-01-01'
-END_DATE        = '2026-04-15'
-
-INITIAL_BALANCE = 10000.0
-RISK_PCT        = 0.02
-SLIPPAGE_PCT    = 0.0001
-
-RESULTS_DIR     = 'results'
-
-# Strategy params. Kept in one place so the README can reference them.
-TWO_B_LOOKBACK       = 20
-TWO_B_CONFIRM        = 3
-W2B_DENOISE_WINDOW   = 128
-W2B_PROMINENCE_ATR   = 1.0
-W2B_PIVOT_CONFIRM    = 3
-
-# Scaled backtester params.
-MAX_TRANCHES         = 3
-
-LBL_2B         = '2B Rule'
-LBL_W2B        = 'Wavelet-2B'
-SUFFIX_SCALED  = ' (scaled)'
-
-# Backtester variants iterated for every strategy. Each entry pairs a label
-# suffix with a factory that returns a fresh backtester instance.
-BACKTESTER_VARIANTS = [
-    ('', lambda: Backtester(
-        initial_balance=INITIAL_BALANCE,
-        risk_pct=RISK_PCT,
-        slippage_pct=SLIPPAGE_PCT,
-    )),
-    (SUFFIX_SCALED, lambda: BacktesterScaled(
-        initial_balance=INITIAL_BALANCE,
-        risk_pct=RISK_PCT,
-        slippage_pct=SLIPPAGE_PCT,
-        max_tranches=MAX_TRANCHES,
-    )),
-]
+START_DATE = "2000-01-01"
+END_DATE = "2026-04-15"
+EVALUATION_START = "2018-01-01"
+INITIAL_BALANCE = 100_000.0
+RISK_PCT = 0.02
+COMMISSION_PER_CONTRACT = 2.50
+SLIPPAGE_TICKS = 1
+MAX_LEVERAGE = 20.0
+MAX_TRANCHES = 3
+RESULTS_DIR = "results"
+ENGINE_VERSION = "0.2.0"
 
 
-def _build_strategies() -> List[Tuple[str, object]]:
-    return [
-        (LBL_2B,  TwoB(lookback=TWO_B_LOOKBACK, confirmation_days=TWO_B_CONFIRM)),
-        (LBL_W2B, WaveletTwoB(
-            denoise_window=W2B_DENOISE_WINDOW,
-            min_prominence_atr=W2B_PROMINENCE_ATR,
-            pivot_confirm_bars=W2B_PIVOT_CONFIRM,
-            confirmation_days=TWO_B_CONFIRM,
-        )),
-    ]
+@dataclass(frozen=True)
+class FuturesSpec:
+    name: str
+    multiplier: float
+    tick_size: float
+
+
+# Standard US futures specifications. Yahoo's continuous series remains a
+# research proxy; these values only make sizing and costs dimensionally correct.
+INSTRUMENTS = {
+    "GC=F": FuturesSpec("Gold", 100, 0.10),
+    "SI=F": FuturesSpec("Silver", 5_000, 0.005),
+    "CL=F": FuturesSpec("WTI Crude", 1_000, 0.01),
+    "NG=F": FuturesSpec("Natural Gas", 10_000, 0.001),
+    "HG=F": FuturesSpec("Copper", 25_000, 0.0005),
+    "ZW=F": FuturesSpec("Wheat", 50, 0.25),
+    "ZC=F": FuturesSpec("Corn", 50, 0.25),
+    "ZS=F": FuturesSpec("Soybeans", 50, 0.25),
+    "KC=F": FuturesSpec("Coffee", 375, 0.05),
+    "LE=F": FuturesSpec("Live Cattle", 400, 0.025),
+}
+
+BACKTESTERS = [("", Backtester), (" (scaled)", BacktesterScaled)]
 
 
 class _ReplayStrategy(Strategy):
-    """
-    Wraps a pre-computed signals DataFrame so generate_signals() is essentially
-    free. Used to avoid re-running the expensive Wavelet-2B pipeline once per
-    backtester variant — we generate signals once per (ticker, strategy) and
-    replay them through every backtester.
-    """
-    def __init__(self, name: str, signals_df: pd.DataFrame):
+    def __init__(self, name: str, signals: pd.DataFrame):
         super().__init__(name=name)
-        self._cached = signals_df.copy()
+        self._cached = signals.copy()
 
     def generate_signals(self) -> pd.DataFrame:
-        # set_data() (called by Backtester.run) overwrites self.data, so we
-        # restore the cached signals here. The backtester then iterates this
-        # DataFrame directly via the return value.
         self.data = self._cached.copy()
         self._signals_generated = True
         return self.data
 
 
-def _metrics_row(ticker: str, label: str, metrics: dict) -> dict:
-    """Flatten the metrics dict to the subset we want in the summary table."""
-    return {
-        'ticker':            ticker,
-        'strategy':          label,
-        'sharpe_ratio':      metrics['sharpe_ratio'],
-        'max_drawdown_pct':  metrics['max_drawdown_pct'],
-        'total_return_pct':  round(metrics['total_return_pct'], 2),
-        'num_trades':        metrics['num_trades'],
-        'win_rate_pct':      metrics['win_rate_pct'],
-        'profit_factor':     metrics['profit_factor'],
-        'expectancy':        metrics['expectancy'],
-    }
-
-
-def _plot_equity_curves(ticker: str, curves: List[Tuple[str, list]], save_path: str):
-    """
-    Overlay equity curves for all strategies on one figure.
-    `curves` is a list of (label, equity_curve_list) tuples, where each entry
-    in equity_curve_list is a {'date': ..., 'balance': ...} dict.
-    """
-    fig = go.Figure()
-    for label, eq in curves:
-        if not eq:
-            continue
-        eq_df = pd.DataFrame(eq)
-        fig.add_trace(go.Scatter(
-            x=eq_df['date'], y=eq_df['balance'],
-            name=label, mode='lines', line=dict(width=1.5),
-        ))
-    fig.update_layout(
-        title=f'Equity curves — {ticker} (initial £{INITIAL_BALANCE:,.0f})',
-        xaxis_title='Date', yaxis_title='Balance (£)',
-        hovermode='x unified',
-    )
-    fig.write_html(save_path)
-    print(f"  saved equity plot -> {save_path}")
-
-
-def run_comparison(tickers: List[str] = None,
-                   start: str = START_DATE,
-                   end: str = END_DATE) -> pd.DataFrame:
-    """Main entry point. Returns the assembled results DataFrame."""
-    tickers = tickers or DEFAULT_TICKERS
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-
-    rows = []
-    # Preserve insertion order so the equity-plot legend matches the run order.
-    full_labels = [
-        s_lbl + bt_suffix
-        for s_lbl, _ in _build_strategies()
-        for bt_suffix, _ in BACKTESTER_VARIANTS
+def _build_strategies() -> List[Tuple[str, Strategy]]:
+    return [
+        ("2B Rule", TwoB(lookback=20, confirmation_days=3)),
+        ("Wavelet-2B", WaveletTwoB(
+            denoise_window=128,
+            min_prominence_atr=1.0,
+            min_pivot_distance=5,
+            pivot_confirm_bars=3,
+            prominence_lookback=20,
+            confirmation_days=3,
+        )),
     ]
 
-    for ticker in tickers:
-        print(f"\n=== {ticker} ===")
-        df = load_historical_data(ticker, start, end)
 
-        results = {}
-        for s_label, strat in _build_strategies():
-            # Generate signals ONCE per (ticker, strategy) — wavelet denoise
-            # is expensive, so we replay the same signal frame through every
-            # backtester variant via _ReplayStrategy.
-            print(f"  generating signals: {s_label}")
-            strat.set_data(df)
-            signals_df = strat.generate_signals()
+def _data_hash(frame: pd.DataFrame) -> str:
+    values = pd.util.hash_pandas_object(frame, index=True).values.tobytes()
+    return hashlib.sha256(values).hexdigest()
 
-            for bt_suffix, make_bt in BACKTESTER_VARIANTS:
-                full_label = s_label + bt_suffix
-                print(f"    running backtest: {full_label}")
-                replay = _ReplayStrategy(strat.name, signals_df)
-                metrics = make_bt().run(df, replay, verbose=False)
-                results[full_label] = metrics
-                rows.append(_metrics_row(ticker, full_label, metrics))
 
-        equity_curves = [(lbl, results[lbl]['equity_curve']) for lbl in full_labels]
-        _plot_equity_curves(
-            ticker,
-            equity_curves,
-            os.path.join(RESULTS_DIR, f"equity_{ticker.replace('^', '').replace('=', '_')}.html"),
+def _make_backtester(engine, spec: FuturesSpec):
+    common = dict(
+        initial_balance=INITIAL_BALANCE,
+        risk_pct=RISK_PCT,
+        contract_multiplier=spec.multiplier,
+        commission_per_unit=COMMISSION_PER_CONTRACT,
+        tick_size=spec.tick_size,
+        slippage_ticks=SLIPPAGE_TICKS,
+        max_leverage=MAX_LEVERAGE,
+        integer_positions=True,
+    )
+    if engine is BacktesterScaled:
+        common["max_tranches"] = MAX_TRANCHES
+    return engine(**common)
+
+
+def _sample_frames(signals: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    split = pd.Timestamp(EVALUATION_START)
+    return [
+        ("development", signals.loc[signals.index < split]),
+        ("evaluation", signals.loc[signals.index >= split]),
+    ]
+
+
+def _metrics_row(
+    ticker: str,
+    label: str,
+    sample: str,
+    frame: pd.DataFrame,
+    metrics: dict,
+    source_hash: str,
+    spec: FuturesSpec,
+    repaired_range_fields: int,
+) -> dict:
+    strategy_parameters = (
+        "lookback=20;confirmation_days=3"
+        if label.startswith("2B Rule")
+        else (
+            "denoise_window=128;min_prominence_atr=1.0;min_pivot_distance=5;"
+            "pivot_confirm_bars=3;prominence_lookback=20;confirmation_days=3"
         )
-
-    results_df = pd.DataFrame(rows)
-
-    # --- Print per-ticker tables ---
-    TICKER_NAMES = {
-        'GC=F': 'Gold',
-        'SI=F': 'Silver',
-        'CL=F': 'WTI Crude Oil',
-        'NG=F': 'Natural Gas',
-        'HG=F': 'Copper',
-        'ZW=F': 'Wheat',
-        'ZC=F': 'Corn',
-        'ZS=F': 'Soybeans',
-        'KC=F': 'Coffee',
-        'LE=F': 'Live Cattle',
+    )
+    return {
+        "engine_version": ENGINE_VERSION,
+        "ticker": ticker,
+        "strategy": label,
+        "strategy_parameters": strategy_parameters,
+        "sample": sample,
+        "start_date": frame.index.min().date().isoformat(),
+        "end_date": frame.index.max().date().isoformat(),
+        "source_sha256": source_hash,
+        "repaired_range_fields": repaired_range_fields,
+        "initial_balance": INITIAL_BALANCE,
+        "risk_pct": RISK_PCT,
+        "contract_multiplier": spec.multiplier,
+        "tick_size": spec.tick_size,
+        "commission_per_contract": COMMISSION_PER_CONTRACT,
+        "slippage_ticks": SLIPPAGE_TICKS,
+        "max_leverage": MAX_LEVERAGE,
+        "sharpe_ratio": metrics["sharpe_ratio"],
+        "max_drawdown_pct": metrics["max_drawdown_pct"],
+        "cagr_pct": metrics["cagr_pct"],
+        "total_return_pct": metrics["total_return_pct"],
+        "exposure_pct": metrics["exposure_pct"],
+        "num_trades": metrics["num_trades"],
+        "profit_factor": metrics["profit_factor"],
+        "total_costs": metrics["total_costs"],
     }
 
-    print("\n" + "=" * 72)
-    print("RESULTS — 2B Rule vs Wavelet-2B (plain + scaled backtester)")
-    print("=" * 72)
+
+def _plot_equity_curves(ticker: str, curves: list[tuple[str, list]], save_path: str) -> None:
+    figure = go.Figure()
+    for label, curve in curves:
+        equity = pd.DataFrame(curve)
+        if not equity.empty:
+            figure.add_trace(go.Scatter(
+                x=equity["date"], y=equity["balance"], name=label, mode="lines"
+            ))
+    figure.update_layout(
+        title=f"Evaluation-sample mark-to-market equity — {ticker}",
+        xaxis_title="Date",
+        yaxis_title="Account equity (USD)",
+        hovermode="x unified",
+    )
+    figure.write_html(save_path)
+
+
+def run_comparison(tickers: list[str] | None = None) -> pd.DataFrame:
+    tickers = tickers or list(INSTRUMENTS)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    rows: list[dict] = []
+
     for ticker in tickers:
-        name = TICKER_NAMES.get(ticker, ticker)
-        sub = results_df[results_df['ticker'] == ticker].drop(columns='ticker')
-        print(f"\n{ticker} ({name}):")
-        print(sub.to_string(index=False))
+        if ticker not in INSTRUMENTS:
+            raise ValueError(f"No futures specification configured for {ticker}")
+        spec = INSTRUMENTS[ticker]
+        print(f"\n{ticker} — {spec.name}")
+        prices = load_historical_data(ticker, START_DATE, END_DATE)
+        source_hash = _data_hash(prices)
+        repaired_range_fields = (
+            prices.attrs.get("repaired_high_rows", 0)
+            + prices.attrs.get("repaired_low_rows", 0)
+        )
+        evaluation_curves: list[tuple[str, list]] = []
 
-    # --- Save CSV ---
-    stamp = date.today().strftime('%Y%m%d')
-    csv_path = os.path.join(RESULTS_DIR, f'comparison_{stamp}.csv')
-    results_df.to_csv(csv_path, index=False)
-    print(f"\nResults saved to {csv_path}")
+        for strategy_label, strategy in _build_strategies():
+            strategy.set_data(prices)
+            signals = strategy.generate_signals()
 
-    return results_df
+            for sample_name, sample in _sample_frames(signals):
+                if sample.empty:
+                    continue
+                for suffix, engine in BACKTESTERS:
+                    label = strategy_label + suffix
+                    replay = _ReplayStrategy(strategy.name, sample)
+                    metrics = _make_backtester(engine, spec).run(sample, replay, verbose=False)
+                    rows.append(_metrics_row(
+                        ticker,
+                        label,
+                        sample_name,
+                        sample,
+                        metrics,
+                        source_hash,
+                        spec,
+                        repaired_range_fields,
+                    ))
+                    if sample_name == "evaluation":
+                        evaluation_curves.append((label, metrics["equity_curve"]))
+
+        safe_ticker = ticker.replace("=", "_").replace("^", "")
+        _plot_equity_curves(
+            ticker,
+            evaluation_curves,
+            os.path.join(RESULTS_DIR, f"equity_{safe_ticker}.html"),
+        )
+
+    result = pd.DataFrame(rows)
+    stamp = date.today().strftime("%Y%m%d")
+    output = os.path.join(RESULTS_DIR, f"comparison_validated_{stamp}.csv")
+    result.to_csv(output, index=False)
+    print(f"\nSaved {output}")
+    return result
 
 
 if __name__ == "__main__":

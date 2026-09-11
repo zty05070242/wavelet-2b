@@ -157,8 +157,8 @@ def print_metrics(label: str, fast_cov: float, slow_cov: float, m: dict):
     print(f"  {'Win rate':20s}: {m['win_rate_pct']:.1f}%")
     print(f"  {'Profit factor':20s}: {m['profit_factor']}")
     print(f"  {'Num trades':20s}: {m['num_trades']}")
-    print(f"  {'Avg win':20s}: £{m['avg_win']:,.2f}")
-    print(f"  {'Avg loss':20s}: £{m['avg_loss']:,.2f}")
+    print(f"  {'Avg win':20s}: {m['avg_win']:,.2f}")
+    print(f"  {'Avg loss':20s}: {m['avg_loss']:,.2f}")
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +196,7 @@ if __name__ == "__main__":
     print(f"\nDerived Q:  fast={Q_fast_derived:.6f}  slow={Q_slow_derived:.6f}")
 
     print(f"\n{'='*60}")
-    print("BACKTEST COMPARISON  (^GSPC 2000–2026, £10k, 2% risk, 1bp slip)")
+    print("BACKTEST COMPARISON  (^GSPC 2000–2026, 10k, 2% risk, 1bp slip)")
     print(f"{'='*60}")
 
     m_baseline = run_kalman(BASELINE_FAST_COV, BASELINE_SLOW_COV, df, "baseline")

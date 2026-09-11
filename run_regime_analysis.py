@@ -1,21 +1,20 @@
 """
 run_regime_analysis.py — HMM regime overlay on the 2B vs Wavelet-2B experiment.
 
-For each of the 10 commodity futures, fits a 3-state Gaussian HMM
-(ranging / trending / volatile) on rolling realized vol + 20-day return, then:
+For each commodity future, fit a 3-state Gaussian HMM on rolling realized
+volatility and 20-day return, then:
 
   1. Splits the trade log from each backtest by regime at entry date — showing
      which regime each strategy earns (or loses) money in.
-  2. Runs a crisis-filtered version of each backtest: signals in the volatile
-     regime are zeroed out using a causal rolling HMM (no look-ahead).
+  2. Run a high-volatility-filtered version of each backtest using causal
+     rolling labels.
 
-The regime-split table answers the NG=F question: if a market spends most of
-its time in the volatile regime and that regime has a profit factor below 1,
-the strategy's underperformance is structurally explained, not a mystery.
+The labels are low_vol, medium_vol and high_vol. They describe the ordering
+variable and do not imply that the middle state is a trend regime.
 
 Saves:
   results/regime_analysis_YYYYMMDD.csv — per-(ticker, strategy, regime) trade metrics
-  results/regime_gated_YYYYMMDD.csv    — ungated vs crisis-filtered comparison
+  results/regime_gated_YYYYMMDD.csv    — ungated vs high-volatility-filtered comparison
 
 Usage: python run_regime_analysis.py
 """
@@ -31,46 +30,32 @@ from data_loader import load_historical_data
 from backtester import Backtester
 from backtester_scaled import BacktesterScaled
 from regime_hmm import decode_regimes_full, rolling_causal_regimes
+from run_comparison import (
+    END_DATE,
+    EVALUATION_START,
+    INSTRUMENTS,
+    RESULTS_DIR,
+    START_DATE,
+    _make_backtester,
+)
 from strategy_folder._strategy_base_class import Strategy
 from strategy_folder.two_b import TwoB
 from strategy_folder.wavelet_two_b import WaveletTwoB
 
 
-# --- Config (mirrors run_comparison.py) ----------------------------------------
-
-TICKERS = [
-    'GC=F', 'SI=F', 'CL=F', 'NG=F', 'HG=F',
-    'ZW=F', 'ZC=F', 'ZS=F', 'KC=F', 'LE=F',
-]
-TICKER_NAMES = {
-    'GC=F': 'Gold',        'SI=F': 'Silver',    'CL=F': 'WTI Crude',
-    'NG=F': 'Natural Gas', 'HG=F': 'Copper',    'ZW=F': 'Wheat',
-    'ZC=F': 'Corn',        'ZS=F': 'Soybeans',  'KC=F': 'Coffee',
-    'LE=F': 'Live Cattle',
-}
-START_DATE      = '2000-01-01'
-END_DATE        = '2026-04-15'
-INITIAL_BALANCE = 10_000.0
-RISK_PCT        = 0.02
-SLIPPAGE_PCT    = 0.0001
-MAX_TRANCHES    = 3
-RESULTS_DIR     = 'results'
+TICKERS = list(INSTRUMENTS)
+TICKER_NAMES = {ticker: spec.name for ticker, spec in INSTRUMENTS.items()}
 
 HMM_N_STATES    = 3
 HMM_TRAIN_WIN   = 1260   # ~5 years for causal rolling refit
 HMM_REFIT_EVERY = 63     # ~1 quarter
 
-VOLATILE_REGIME = 'volatile'
-ALL_REGIMES     = ['ranging', 'trending', 'volatile']
+HIGH_VOL_REGIME = 'high_vol'
+ALL_REGIMES     = ['low_vol', 'medium_vol', 'high_vol']
 
 BACKTESTER_VARIANTS: List[Tuple[str, object]] = [
-    ('',          lambda: Backtester(INITIAL_BALANCE, RISK_PCT, SLIPPAGE_PCT)),
-    (' (scaled)', lambda: BacktesterScaled(
-        initial_balance=INITIAL_BALANCE,
-        risk_pct=RISK_PCT,
-        slippage_pct=SLIPPAGE_PCT,
-        max_tranches=MAX_TRANCHES,
-    )),
+    ('', Backtester),
+    (' (scaled)', BacktesterScaled),
 ]
 
 
@@ -121,7 +106,7 @@ def run_regime_analysis(tickers: List[str] = None) -> None:
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     analysis_rows: list[dict] = []   # per (ticker, strategy, regime) trade metrics
-    gated_rows:    list[dict] = []   # ungated vs crisis-filtered full metrics
+    gated_rows:    list[dict] = []
 
     for ticker in tickers:
         name = TICKER_NAMES.get(ticker, ticker)
@@ -148,22 +133,26 @@ def run_regime_analysis(tickers: List[str] = None) -> None:
             pct = regime_pct.get(reg, 0.0)
             print(f"    {reg:12s}: {pct:.1f}%")
 
-        # Dates where causal regime is volatile (used for signal gating)
-        volatile_dates = set(regimes_causal[regimes_causal == VOLATILE_REGIME].index)
+        high_vol_dates = set(regimes_causal[regimes_causal == HIGH_VOL_REGIME].index)
 
         # --- Per-strategy loop ---
         for s_label, strat in _make_strategies():
             print(f"  generating signals: {s_label}")
             strat.set_data(df)
-            signals_df = strat.generate_signals()
+            signals = strat.generate_signals()
+            evaluation_signals = signals.loc[
+                signals.index >= pd.Timestamp(EVALUATION_START)
+            ]
 
-            for bt_suffix, make_bt in BACKTESTER_VARIANTS:
+            for bt_suffix, engine in BACKTESTER_VARIANTS:
                 full_label = s_label + bt_suffix
                 print(f"    backtest: {full_label}")
 
                 # ---- Ungated ----
-                replay  = _ReplayStrategy(strat.name, signals_df)
-                metrics = make_bt().run(df, replay, verbose=False)
+                replay  = _ReplayStrategy(strat.name, evaluation_signals)
+                metrics = _make_backtester(engine, INSTRUMENTS[ticker]).run(
+                    evaluation_signals, replay, verbose=False
+                )
                 trades  = metrics['trades']
 
                 # Split trade log by regime at entry date
@@ -174,21 +163,24 @@ def run_regime_analysis(tickers: List[str] = None) -> None:
                     analysis_rows.append({
                         'ticker':            ticker,
                         'strategy':          full_label,
+                        'sample':            'evaluation',
                         'regime':            regime,
                         'regime_pct_time':   round(regime_pct.get(regime, 0.0), 1),
                         **m,
                     })
 
-                # ---- Crisis-filtered (causal gating) ----
-                gated_sigs = signals_df.copy()
-                gated_sigs.loc[gated_sigs.index.isin(volatile_dates), 'signal'] = 0
+                gated_sigs = evaluation_signals.copy()
+                gated_sigs.loc[gated_sigs.index.isin(high_vol_dates), 'signal'] = 0
 
                 replay_gated  = _ReplayStrategy(strat.name + ' [gated]', gated_sigs)
-                metrics_gated = make_bt().run(df, replay_gated, verbose=False)
+                metrics_gated = _make_backtester(engine, INSTRUMENTS[ticker]).run(
+                    gated_sigs, replay_gated, verbose=False
+                )
 
                 gated_rows.append({
                     'ticker':           ticker,
                     'strategy':         full_label,
+                    'sample':           'evaluation',
                     'sharpe_ungated':   metrics['sharpe_ratio'],
                     'sharpe_gated':     metrics_gated['sharpe_ratio'],
                     'dd_ungated':       metrics['max_drawdown_pct'],
@@ -224,14 +216,14 @@ def run_regime_analysis(tickers: List[str] = None) -> None:
         dist_rows.append({
             'ticker':   ticker,
             'name':     TICKER_NAMES.get(ticker, ticker),
-            'ranging':  round(pct.get('ranging',  0.0), 1),
-            'trending': round(pct.get('trending', 0.0), 1),
-            'volatile': round(pct.get('volatile', 0.0), 1),
+            'low_vol':    round(pct.get('low_vol', 0.0), 1),
+            'medium_vol': round(pct.get('medium_vol', 0.0), 1),
+            'high_vol':   round(pct.get('high_vol', 0.0), 1),
         })
     print(pd.DataFrame(dist_rows).to_string(index=False))
 
     print("\n" + "=" * 80)
-    print("CRISIS-FILTERED vs UNGATED — Sharpe / Max Drawdown")
+    print("HIGH-VOLATILITY-FILTERED vs UNGATED — Sharpe / Max Drawdown")
     print("=" * 80)
     print(gated_df.to_string(index=False))
 
