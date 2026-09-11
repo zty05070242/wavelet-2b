@@ -11,6 +11,13 @@ dist/
 # Virtual environment
 .venv/
 
+# Local development files
+.DS_Store
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+
 # Charts / output files
 *.html
 *.png
