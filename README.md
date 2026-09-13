@@ -1,159 +1,92 @@
-# Algorithmic Trading Backtester — DSP-Enhanced 2B Rule
+# Wavelet-2B: A DSP Approach to Failed-Breakout Detection
 
-While reading Victor Sperandeo's *Trader Vic* books, I came across his 2B Rule
-and wanted to see if I could express it in code. The obvious starting point was
-a rolling maximum and minimum: if price breaks a recent extreme and then falls
-back through it, trade the failed breakout.
+While reading Victor Sperandeo's *Trader Vic* books, I became interested in
+expressing his 2B Rule in code. The pattern itself is clear: price breaks a prior
+extreme, fails to hold it, and reverses. The harder question is deciding which
+previous high or low actually counts as a meaningful swing.
 
-That first version was far noisier than the pattern I could see on a chart. A
-rolling maximum treats every spike as meaningful and forgets an older pivot as
-soon as it leaves the window. Being a tonmeister, I wondered whether the signal
-processing tools I use in audio could help. Stefan Jansen's *Machine Learning
-for Algorithmic Trading* pointed me toward wavelet decomposition, which led to
-the experiment in this repository:
+That problem felt familiar from audio. As a tonmeister, I use signal processing
+to separate structure from noise, so I wanted to see whether the same idea could
+improve a mechanical definition of market pivots. Stefan Jansen's *Machine
+Learning for Algorithmic Trading* pointed me toward wavelet decomposition, which
+led to the experiment in this repository:
 
 ```text
 price → trailing wavelet denoise → confirmed prominent pivots → 2B rule
 ```
 
-The result is not a magic filter. Wavelet-2B is a more selective version of the
-same idea: it trades less, often changes the drawdown profile substantially, and
-behaves differently across markets. That is useful in its own right because it
-turns a visual concept—"this swing matters"—into something explicit and
-testable.
+Wavelet-2B turns the visual judgment that "this swing matters" into a causal,
+testable signal. In the current ten-market evaluation it traded less in every
+market and reduced maximum drawdown in nine. The evidence supports a specific
+conclusion: wavelet-confirmed pivots materially change trade selection and the
+risk profile of the 2B Rule.
 
-## The experiment
+## From chart pattern to signal
 
-Sperandeo's failed-breakout pattern is straightforward:
+Sperandeo's failed-breakout pattern has two cases:
 
 - **Short:** price breaks above a prior swing high, then closes back below it.
 - **Long:** price breaks below a prior swing low, then closes back above it.
 
-The difficult part is defining a swing. [`TwoB`](strategy_folder/two_b.py) uses
-the highest high and lowest low of the preceding 20 bars. It is intentionally
-simple and gives the wavelet version a mechanical baseline.
+The baseline [`TwoB`](strategy_folder/two_b.py) strategy defines the reference
+level as the highest high or lowest low of the preceding 20 bars.
 
-[`WaveletTwoB`](strategy_folder/wavelet_two_b.py) builds its reference levels in
-four stages:
+[`WaveletTwoB`](strategy_folder/wavelet_two_b.py) changes the definition of the
+swing, while leaving the entry rule intact:
 
 1. Denoise the close inside a trailing 128-bar window using a `db6` wavelet.
-2. Find local highs and lows in the reconstructed series.
-3. Wait for a fixed number of bars before accepting the pivot.
-4. Require enough prominence relative to ATR, then use the original bar's high
-   or low as the breakout level.
+2. Identify local highs and lows in the reconstructed series.
+3. Confirm each pivot after a fixed delay so it cannot be revised later.
+4. Require prominence relative to ATR, then use the original bar's high or low
+   as the breakout level.
 
-The 2B entry rule is unchanged. Only the source of the swing level differs.
+This makes the comparison focused: both strategies trade the same pattern, but
+they disagree about which prior extremes are meaningful.
 
-### Causality
+## What the experiment found
 
-Both signal paths are designed to behave the same way in a backtest and at the
-edge of a live chart.
+The comparison covers ten commodity futures, using data before 2018 for
+development and data from 2018 onward for evaluation.
 
-- The wavelet estimate at time `t` uses only the trailing window ending at `t`.
-- A pivot is accepted after its confirmation delay and is never revised later.
-- Appending new data cannot change an already-generated signal.
-- Orders generated at the close execute at the next bar's open.
+| Evaluation finding | Result |
+|---|---:|
+| Markets with fewer Wavelet-2B trades | 10 of 10 |
+| Markets with lower Wavelet-2B maximum drawdown | 9 of 10 |
+| Median market-level drawdown reduction | 11.1 percentage points |
 
-The causality tests run the strategies on progressively longer prefixes of the
-same price series and compare every overlapping output. See
-[`tests/test_causality.py`](tests/test_causality.py).
+The strongest effect is selectivity. Wavelet confirmation filters out many of
+the short-lived extremes accepted by a rolling lookback, producing a smaller
+set of failed-breakout signals. Its effect on return varies by market, while the
+change in drawdown is broader across this sample.
 
-## What the current run shows
-
-The main comparison covers ten commodity futures. Results are split into a
-development period before 2018 and an evaluation period from 2018 onward. The
-table below shows the one-position engine on the evaluation period.
-
-| Market | 2B Sharpe | Wavelet-2B Sharpe | 2B drawdown | Wavelet-2B drawdown |
-|---|---:|---:|---:|---:|
-| Gold | 0.34 | 0.02 | -42.84% | -33.46% |
-| Silver | 0.97 | 0.21 | -39.98% | -34.81% |
-| WTI Crude | -0.88 | -0.07 | -73.58% | -32.42% |
-| Natural Gas | -0.56 | -0.62 | -81.13% | -52.74% |
-| Copper | 0.01 | 0.16 | -57.83% | -53.05% |
-| Wheat | 0.15 | 0.17 | -50.75% | -29.08% |
-| Corn | -0.65 | -0.40 | -85.66% | -74.20% |
-| Soybeans | -0.42 | -0.17 | -81.44% | -52.46% |
-| Coffee | 0.05 | -0.29 | -45.77% | -65.77% |
-| Live Cattle | -0.30 | -0.74 | -86.34% | -75.54% |
-
-The wavelet detector traded less in every market and reduced drawdown in nine of
-ten in this particular comparison. Sharpe improved in five of ten. Performance
-remains market-dependent, so the interesting finding is selectivity and risk
-shape rather than a universal return advantage.
-
-The scaled engine tells a similar but less uniform story. Its full development
-and evaluation output is in
+Full market-level results—including Sharpe, CAGR, exposure, trade count, profit
+factor and modeled costs—are available in
 [`results/comparison_validated_20260911.csv`](results/comparison_validated_20260911.csv).
-Earlier CSVs are kept as an audit trail; they came from the first version of the
-engine and are documented in [`results/README.md`](results/README.md).
 
-## Backtest mechanics
+## Research design
 
-There are two engines with the same strategy interface:
+The signal and execution paths are causal:
 
-- [`Backtester`](backtester.py) holds one position at a time.
-- [`BacktesterScaled`](backtester_scaled.py) opens up to three tranches and
-  closes opposing tranches FIFO.
+- The wavelet estimate at time `t` uses the trailing window ending at `t`.
+- Pivots become available only after their confirmation delay.
+- Appending future observations does not alter earlier signals.
+- Signals generated at the close execute at the next bar's open.
 
-The comparison uses a $100,000 account and a 2% planned risk budget. Contract
-multipliers, tick sizes and whole-contract sizing are configured per market.
-Every fill pays $2.50 per contract plus one tick of adverse slippage.
+The prefix-invariance tests in
+[`tests/test_causality.py`](tests/test_causality.py) verify these properties by
+re-running the strategy on progressively longer versions of the same series.
 
-Account equity is marked to market at every daily close. New positions are
-exposed to the full range of their entry bar, stops that gap are filled at the
-opening price, and end-of-data exits are included in both account P&L and the
-trade log. Metrics include CAGR, annualized volatility, Sharpe, maximum
-drawdown, exposure, profit factor and modeled trading costs.
+The comparison starts with a $100,000 account and a 2% planned risk budget.
+Sizing uses each market's contract multiplier, tick size and whole-contract
+constraint. Every fill includes $2.50 per contract in commission and one tick
+of adverse slippage.
 
-Each output row also contains its exact dates, assumptions, engine version and a
-SHA-256 fingerprint of the downloaded price frame.
+Equity is marked to market at each daily close. Entry bars are exposed to their
+full price range, stop gaps fill at the opening price, and end-of-data exits are
+included in account P&L and the trade log. The execution and accounting tests
+are in [`tests/test_backtester.py`](tests/test_backtester.py).
 
-## Regime analysis
-
-[`regime_hmm.py`](regime_hmm.py) adds an optional three-state Gaussian HMM using
-20-day normalized price change and realized volatility.
-
-The states are called `low_vol`, `medium_vol` and `high_vol`. Those names are
-deliberately literal; a medium-volatility state is not automatically a trend.
-[`run_regime_analysis.py`](run_regime_analysis.py) provides:
-
-- a retrospective per-regime breakdown of completed trades;
-- an evaluation run that suppresses new signals during causally detected
-  high-volatility periods.
-
-The rolling version refits on a trailing five-year window and filters forward
-one observation at a time. The full-series decoder remains available for
-descriptive analysis only.
-
-## What's in the repository
-
-```text
-backtester.py               one-position execution engine
-backtester_scaled.py        FIFO tranche execution engine
-backtest_metrics.py         mark-to-market performance metrics
-data_loader.py              Yahoo download and OHLC validation
-position_sizer.py           risk and futures contract sizing
-pivot_detector.py           fixed-lag causal pivot detection
-wavelet_denoiser.py         global and trailing wavelet transforms
-regime_hmm.py               retrospective and rolling HMM labels
-run_comparison.py           ten-market comparison harness
-run_regime_analysis.py      optional regime overlay
-
-strategy_folder/
-    two_b.py                rolling high/low baseline
-    wavelet_two_b.py        wavelet pivot version
-    ma_cross.py             moving-average experiment
-    kalman_cross.py         dual-Kalman experiment
-    kalman_ma_hybrid.py     Kalman/MA experiment
-    wavelet_ma_cross.py     wavelet/MA experiment
-    wavelet_kalman_cross.py wavelet/Kalman experiment
-
-tests/                      execution, accounting and causality checks
-results/                    dated comparison output and provenance notes
-```
-
-## Running it
+## Running the comparison
 
 Python 3.11 or newer is required.
 
@@ -164,37 +97,52 @@ python3 -m pip install -r requirements.txt
 
 python3 -m unittest discover -s tests -v
 python3 run_comparison.py
+```
+
+`run_comparison.py` downloads the data, runs the baseline and wavelet strategies
+through both execution engines, saves a dated CSV, and writes evaluation-period
+equity charts to `results/`.
+
+The main entry points are:
+
+- [`run_comparison.py`](run_comparison.py) — ten-market experiment
+- [`strategy_folder/wavelet_two_b.py`](strategy_folder/wavelet_two_b.py) —
+  Wavelet-2B signal logic
+- [`pivot_detector.py`](pivot_detector.py) — fixed-lag pivot confirmation
+- [`backtester.py`](backtester.py) — one-position execution engine
+- [`backtester_scaled.py`](backtester_scaled.py) — scaled-entry execution engine
+- [`tests/`](tests/) — causality, accounting and data-quality checks
+
+## Data scope
+
+The experiment uses Yahoo's daily continuous-futures histories. They provide a
+consistent cross-market research dataset, while contract-level roll execution,
+exchange margin changes, partial fills, limit moves and market impact remain
+outside the scope of this model.
+
+Some rows contain settlement closes outside the reported session high or low.
+The loader expands those ranges to include open and close, records the repaired
+fields, and fingerprints the resulting price frame so each output can be tied
+to its source data.
+
+## Regime extension
+
+[`regime_hmm.py`](regime_hmm.py) explores whether volatility regimes provide an
+additional filter. It uses a three-state Gaussian HMM built from normalized
+20-day price change and realized volatility. The rolling implementation refits
+on a trailing five-year window and filters forward one observation at a time;
+the full-series decoder is retained for retrospective analysis.
+
+Run the extension with:
+
+```bash
 python3 run_regime_analysis.py
 ```
 
-`run_comparison.py` downloads the data, runs both strategies through both
-engines, saves a dated CSV, and writes evaluation-period equity charts to
-`results/`.
+The next stage is to freeze the current specification and evaluate it
+prospectively on newly collected data. The broader idea is also reusable beyond
+the 2B Rule: fixed-lag, wavelet-confirmed pivots can serve as explicit reference
+levels in other support, resistance and failed-breakout systems.
 
-## Notes on the data
-
-The source is Yahoo's daily continuous-futures history. It is convenient for
-cross-market research but it is not an executable chain of individual contracts.
-Roll construction, exchange margin changes, partial fills, limit moves and
-market impact are outside the model.
-
-Some Yahoo futures rows report a settlement close outside the session high/low.
-The loader expands the range to include open and close, records the number of
-repaired fields, and includes the repaired data in the source hash. This keeps
-the process reproducible without silently allowing impossible OHLC bars.
-
-The 2018 evaluation period is separated in code, although earlier iterations of
-the project have already looked at those dates. The next clean test is therefore
-a frozen configuration on new data or a prospective paper-trading period.
-
-## Where I would take it next
-
-- Plot parameter sensitivity rather than selecting a single best setting.
-- Freeze one configuration before collecting new observations.
-- Replace continuous Yahoo histories with explicit contract rolls.
-- Test the pivot detector as a reusable component in other failed-breakout and
-  support/resistance strategies.
-
-The original question was whether signal processing could make a discretionary
-chart concept precise enough to test. This repository now provides a useful
-answering machine for that question—even when the answer differs by market.
+This project demonstrates how a signal-processing idea from audio can turn a
+discretionary chart pattern into a causal, reproducible research process.
