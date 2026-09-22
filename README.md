@@ -9,13 +9,13 @@ rule sees every qualifying high or low literally, so it can fire on price moves
 that are little more than noise.
 
 That is a familiar problem from audio engineering. As a tonmeister, I use signal
-processing techniques—including Fourier analysis and filtering—to decompose a
+processing techniques including Fourier analysis and filtering—to decompose a
 signal, suppress unwanted components, and reconstruct a cleaner representation.
 I wanted to see whether the same principle could give the 2B Rule a cleaner basis
 for identifying market pivots. Stefan Jansen's *Machine Learning for Algorithmic
-Trading* pointed me toward wavelet decomposition, whose time-localized view of a
-signal is well suited to local price structure. This led to the experiment in
-this repository:
+Trading* pointed me toward wavelet decomposition, which can reduce short-term 
+noise while retaining the location of meaningful turning points in the price 
+series. This led to the experiment in this repository:
 
 ```text
 price → trailing wavelet denoise → confirmed prominent pivots → 2B rule
