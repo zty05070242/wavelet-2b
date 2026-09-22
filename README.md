@@ -2,14 +2,20 @@
 
 While reading Victor Sperandeo's *Trader Vic* books, I became interested in
 expressing his 2B Rule in code. The pattern itself is clear: price breaks a prior
-extreme, fails to hold it, and reverses. The harder question is deciding which
-previous high or low actually counts as a meaningful swing.
+extreme, fails to hold it, and reverses. The difficulty appeared when I translated
+that visual pattern into code. A human looking at a chart naturally filters out
+small fluctuations and recognizes certain extremes as meaningful. A mechanical
+rule sees every qualifying high or low literally, so it can fire on price moves
+that are little more than noise.
 
-That problem felt familiar from audio. As a tonmeister, I use signal processing
-to separate structure from noise, so I wanted to see whether the same idea could
-improve a mechanical definition of market pivots. Stefan Jansen's *Machine
-Learning for Algorithmic Trading* pointed me toward wavelet decomposition, which
-led to the experiment in this repository:
+That is a familiar problem from audio engineering. As a tonmeister, I use signal
+processing techniques—including Fourier analysis and filtering—to decompose a
+signal, suppress unwanted components, and reconstruct a cleaner representation.
+I wanted to see whether the same principle could give the 2B Rule a cleaner basis
+for identifying market pivots. Stefan Jansen's *Machine Learning for Algorithmic
+Trading* pointed me toward wavelet decomposition, whose time-localized view of a
+signal is well suited to local price structure. This led to the experiment in
+this repository:
 
 ```text
 price → trailing wavelet denoise → confirmed prominent pivots → 2B rule
