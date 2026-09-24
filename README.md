@@ -46,8 +46,10 @@ swing, while leaving the entry rule intact:
 4. Require prominence relative to ATR, then use the original bar's high or low
    as the breakout level.
 
-This makes the comparison focused: both strategies trade the same pattern, but
-they disagree about which prior extremes are meaningful.
+Both strategies pass their swing levels to the same
+[`two_b_signals`](strategy_folder/two_b_rule.py) function. This makes the
+comparison focused: they trade the same failed-breakout rule, but disagree
+about which prior extremes are meaningful.
 
 ## What the experiment found
 
@@ -113,7 +115,9 @@ The main entry points are:
 
 - [`run_comparison.py`](run_comparison.py) — ten-market experiment
 - [`strategy_folder/wavelet_two_b.py`](strategy_folder/wavelet_two_b.py) —
-  Wavelet-2B signal logic
+  wavelet-derived swing levels
+- [`strategy_folder/two_b_rule.py`](strategy_folder/two_b_rule.py) — shared 2B
+  failed-breakout rule
 - [`pivot_detector.py`](pivot_detector.py) — fixed-lag pivot confirmation
 - [`backtester.py`](backtester.py) — one-position execution engine
 - [`backtester_scaled.py`](backtester_scaled.py) — scaled-entry execution engine

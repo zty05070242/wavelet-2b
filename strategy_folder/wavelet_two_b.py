@@ -1,8 +1,8 @@
-import numpy as np
 import pandas as pd
 
 from pivot_detector import causal_prominent_pivots
 from strategy_folder._strategy_base_class import Strategy
+from strategy_folder.two_b_rule import two_b_signals
 from wavelet_denoiser import rolling_wavelet_denoise
 
 
@@ -73,8 +73,6 @@ class WaveletTwoB(Strategy):
         highs = frame['high'].to_numpy()
         lows = frame['low'].to_numpy()
         closes = frame['close'].to_numpy()
-        n = len(frame)
-
         active_swing_high, active_swing_low = causal_prominent_pivots(
             denoised,
             highs,
@@ -89,27 +87,14 @@ class WaveletTwoB(Strategy):
         frame['swing_high'] = active_swing_high
         frame['swing_low'] = active_swing_low
 
-        signals = np.zeros(n)
-        for i in range(n):
-            sh = active_swing_high[i]
-            sl = active_swing_low[i]
-
-            if not np.isnan(sh) and highs[i] > sh:
-                end = min(i + self.confirmation_days + 1, n)
-                for j in range(i, end):
-                    if closes[j] < sh:
-                        signals[j] = -1.0
-                        break
-
-            if not np.isnan(sl) and lows[i] < sl:
-                end = min(i + self.confirmation_days + 1, n)
-                for j in range(i, end):
-                    if closes[j] > sl:
-                        if signals[j] == 0.0:
-                            signals[j] = 1.0
-                        break
-
-        frame['signal'] = signals
+        frame['signal'] = two_b_signals(
+            highs,
+            lows,
+            closes,
+            active_swing_high,
+            active_swing_low,
+            self.confirmation_days,
+        )
         self.data = frame
         self._signals_generated = True
 
